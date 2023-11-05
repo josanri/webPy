@@ -85,7 +85,6 @@ class UIMainWindow(QMainWindow):
         options = QFileDialog.Options()
         options |= QFileDialog.ReadOnly
         filenames, _ = QFileDialog.getOpenFileNames(self, "Select Images", "", "Image Files (*.png *.jpg *.jpeg *.bmp);;All Files (*)", options=options)
-        print(filenames)
         return filenames
     
     def get_files_by_folder(self) -> [str]:
