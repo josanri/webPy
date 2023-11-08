@@ -1,27 +1,53 @@
 import sys
 import PIL
+import time
 
 from pathlib import Path
 from PIL import Image
 
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QFileDialog, QLabel, QWidget, QMessageBox, QCheckBox
 from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import QThreadPool, QRunnable, QObject, pyqtSignal
 
-def convert_to_webp(input_filename) -> str:
+def convert_to_webp(input_file, output_file) -> str:
     """
     Convert image to webp format.
     """
-    input_file = Path(input_filename)
-    output_file = input_file.with_suffix(".webp")
-
     image = Image.open(input_file)
     image.save(output_file, format="webp")
     return output_file.name
 
+class Signals(QObject):
+    completed = pyqtSignal(list)
+
+class Worker(QRunnable):
+    signals = Signals()
+
+    def __init__(self, filenames, overwrite=False):
+        super(Worker, self).__init__()
+        self.filenames = filenames
+        self.overwrite = overwrite
+
+    def run(self):
+        result = self.process_files()
+        self.signals.completed.emit(result)
+
+    def process_files(self):
+        unprocessed_files = []
+        for filename in set(self.filenames):
+            try:
+                input_file = Path(filename)
+                output_file = input_file.with_suffix(".webp")
+                if self.overwrite or not output_file.exists():
+                    convert_to_webp(filename, output_file)
+            except (PIL.UnidentifiedImageError, FileNotFoundError):
+                unprocessed_files.add(filename)
+        return unprocessed_files
 
 class UIMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.threadpool = QThreadPool().globalInstance()
         self.initUI()
 
     def initUI(self):
@@ -44,6 +70,10 @@ class UIMainWindow(QMainWindow):
         self.warning_enabled = QCheckBox("Show results at the end.")
         self.warning_enabled.setChecked(True)
         self.layout.addWidget(self.warning_enabled)
+
+        self.overwrite_enabled = QCheckBox("Overwrite files if the file already exist.")
+        self.overwrite_enabled.setChecked(False)
+        self.layout.addWidget(self.overwrite_enabled)
         
         select_images_button = QPushButton("Select images in formats like .png, .jpeg or .jpg")
         select_images_button.setStyleSheet("QPushButton { background-color: #7DCE82; color: black; border-radius: 5px; padding: 5px; }")
@@ -57,18 +87,11 @@ class UIMainWindow(QMainWindow):
 
         self.central_widget.setLayout(self.layout)
 
+    def closeEvent(self, event):
+        self.threadpool.clear()
+        event.accept()
 
-    def webp_process_files(self, file_getter):
-        filenames = file_getter()
-        if len(filenames) == 0:
-            return
-        unprocessed_files = set()
-        for filename in set(filenames):
-            try:
-                convert_to_webp(filename)
-            except (PIL.UnidentifiedImageError, FileNotFoundError):
-                unprocessed_files.add(filename)
-
+    def show_result(self, unprocessed_files):
         if self.warning_enabled.isChecked():
             msg = QMessageBox()
             if len(unprocessed_files) > 0:
@@ -81,10 +104,25 @@ class UIMainWindow(QMainWindow):
                 msg.setWindowTitle("Info")
             msg.exec_()
 
+    def webp_process_files(self, file_getter):
+        filenames = file_getter()
+        if len(filenames) == 0:
+            return
+        if self.threadpool.activeThreadCount() >= self.threadpool.maxThreadCount():
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText(f"Please, wait till othes thread finish")
+            msg.setWindowTitle("Warning")
+            msg.exec_()
+        else:
+            worker_thread = Worker(filenames, overwrite=self.overwrite_enabled.isChecked())
+            worker_thread.signals.completed.connect(self.show_result)
+            self.threadpool.start(worker_thread)
+    
     def get_files_by_images(self) -> [str]:
         options = QFileDialog.Options()
         options |= QFileDialog.ReadOnly
-        filenames, _ = QFileDialog.getOpenFileNames(self, "Select Images", "", "Image Files (*.png *.jpg *.jpeg *.bmp);;All Files (*)", options=options)
+        filenames, _ = QFileDialog.getOpenFileNames(self, "Select Images", "", "Image Files (*.ico *.png *.jpg *.jpeg *.bmp);;All Files (*)", options=options)
         return filenames
     
     def get_files_by_folder(self) -> [str]:
