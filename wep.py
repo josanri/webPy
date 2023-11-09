@@ -1,53 +1,18 @@
 import sys
-import PIL
-import time
 
 from pathlib import Path
-from PIL import Image
 
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QFileDialog, QLabel, QWidget, QMessageBox, QCheckBox
+from PyQt5.QtWidgets import QApplication, QMainWindow, QGridLayout, QPushButton, QVBoxLayout, QFileDialog, QLabel, QWidget, QMessageBox, QCheckBox, QSpinBox
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import QThreadPool, QRunnable, QObject, pyqtSignal
+from PyQt5.QtCore import QThreadPool
 
-def convert_to_webp(input_file, output_file) -> str:
-    """
-    Convert image to webp format.
-    """
-    image = Image.open(input_file)
-    image.save(output_file, format="webp")
-    return output_file.name
-
-class Signals(QObject):
-    completed = pyqtSignal(list)
-
-class Worker(QRunnable):
-    signals = Signals()
-
-    def __init__(self, filenames, overwrite=False):
-        super(Worker, self).__init__()
-        self.filenames = filenames
-        self.overwrite = overwrite
-
-    def run(self):
-        result = self.process_files()
-        self.signals.completed.emit(result)
-
-    def process_files(self):
-        unprocessed_files = []
-        for filename in set(self.filenames):
-            try:
-                input_file = Path(filename)
-                output_file = input_file.with_suffix(".webp")
-                if self.overwrite or not output_file.exists():
-                    convert_to_webp(filename, output_file)
-            except (PIL.UnidentifiedImageError, FileNotFoundError):
-                unprocessed_files.add(filename)
-        return unprocessed_files
+from worker import Worker
+from pyqextra import QHLine
 
 class UIMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.threadpool = QThreadPool().globalInstance()
+        self.pool = QThreadPool().globalInstance()
         self.initUI()
 
     def initUI(self):
@@ -67,28 +32,52 @@ class UIMainWindow(QMainWindow):
         instruction_label.setContentsMargins(0, 0, 0, 0)
         self.layout.addWidget(instruction_label)
         
-        self.warning_enabled = QCheckBox("Show results at the end.")
+        self.separator = QHLine()
+        self.layout.addWidget(self.separator)
+
+        self.advanced_settings = QLabel("Advanced settings:")
+        self.advanced_settings.setStyleSheet("QLabel { color: #4f4f4f; }")
+        self.layout.addWidget(self.advanced_settings)
+
+        self.warning_enabled = QCheckBox("Show results at the end")
         self.warning_enabled.setChecked(True)
         self.layout.addWidget(self.warning_enabled)
 
-        self.overwrite_enabled = QCheckBox("Overwrite files if the file already exist.")
+        self.overwrite_enabled = QCheckBox("Overwrite files if the file already exist")
         self.overwrite_enabled.setChecked(False)
         self.layout.addWidget(self.overwrite_enabled)
-        
-        select_images_button = QPushButton("Select images in formats like .png, .jpeg or .jpg")
-        select_images_button.setStyleSheet("QPushButton { background-color: #7DCE82; color: black; border-radius: 5px; padding: 5px; }")
-        select_images_button.clicked.connect(lambda: self.webp_process_files(self.get_files_by_images))
-        self.layout.addWidget(select_images_button)
 
-        select_folder_button = QPushButton("Select folder to turn all the images inside to .webp")
-        select_folder_button.setStyleSheet("QPushButton { background-color: #2D7632; color: white; border-radius: 5px; padding: 5px; }")
-        select_folder_button.clicked.connect(lambda: self.webp_process_files(self.get_files_by_folder))
-        self.layout.addWidget(select_folder_button)
+        self.compression_layout = QGridLayout()
+
+        self.quality = QLabel("Quality (0-100):")
+        self.compression_layout.addWidget(self.quality, 0, 0, 1, 1)
+
+        self.quality_spin = QSpinBox()
+        self.quality_spin.setRange(0, 100)
+        self.quality_spin.setValue(80)
+        self.compression_layout.addWidget(self.quality_spin, 0, 1)
+        
+        self.loseless_enabled = QCheckBox("Loseless conversion")
+        self.loseless_enabled.setChecked(False)
+        self.loseless_enabled.clicked.connect(lambda: self.quality_spin.setValue(100))
+        self.compression_layout.addWidget(self.loseless_enabled, 1, 1)
+
+        self.layout.addLayout(self.compression_layout)
+
+        self.select_images_button = QPushButton("Select images in formats like .png, .jpeg or .jpg")
+        self.select_images_button.setStyleSheet("QPushButton { background-color: #7DCE82; color: black; border-radius: 5px; padding: 5px; }")
+        self.select_images_button.clicked.connect(lambda: self.webp_process_files(self.get_files_by_images))
+        self.layout.addWidget(self.select_images_button)
+
+        self.select_folder_button = QPushButton("Select folder to turn all the images inside to .webp")
+        self.select_folder_button.setStyleSheet("QPushButton { background-color: #2D7632; color: white; border-radius: 5px; padding: 5px; }")
+        self.select_folder_button.clicked.connect(lambda: self.webp_process_files(self.get_files_by_folder))
+        self.layout.addWidget(self.select_folder_button)
 
         self.central_widget.setLayout(self.layout)
 
     def closeEvent(self, event):
-        self.threadpool.clear()
+        self.pool.clear()
         event.accept()
 
     def show_result(self, unprocessed_files):
@@ -100,7 +89,7 @@ class UIMainWindow(QMainWindow):
                 msg.setWindowTitle("Warning")
             else:
                 msg.setIcon(QMessageBox.Icon.Information)
-                msg.setText("Files processed without issues.")
+                msg.setText("Files processed without issues")
                 msg.setWindowTitle("Info")
             msg.exec_()
 
@@ -108,16 +97,22 @@ class UIMainWindow(QMainWindow):
         filenames = file_getter()
         if len(filenames) == 0:
             return
-        if self.threadpool.activeThreadCount() >= self.threadpool.maxThreadCount():
+        if self.pool.activeThreadCount() >= self.pool.maxThreadCount():
             msg = QMessageBox()
             msg.setIcon(QMessageBox.Icon.Warning)
             msg.setText(f"Please, wait till othes thread finish")
             msg.setWindowTitle("Warning")
             msg.exec_()
         else:
-            worker_thread = Worker(filenames, overwrite=self.overwrite_enabled.isChecked())
-            worker_thread.signals.completed.connect(self.show_result)
-            self.threadpool.start(worker_thread)
+            worker_thread = Worker(filenames,
+                                    **{
+                                        "overwrite": self.overwrite_enabled.isChecked(),
+                                        "quality": self.quality_spin.value(),
+                                        "loseless": self.loseless_enabled.isChecked()
+                                    }
+            )
+            worker_thread.signals.result.connect(self.show_result)
+            self.pool.start(worker_thread)
     
     def get_files_by_images(self) -> [str]:
         options = QFileDialog.Options()
@@ -144,7 +139,7 @@ if __name__ == '__main__':
     app.setStyleSheet("QMainWindow { background-color: #f0f0f0; }")
 
     window = UIMainWindow()
-    window.setWindowTitle("WepPy - A Webp transformer")
+    window.setWindowTitle("WepPy - A Webp converter")
     window.setGeometry(100, 100, 300, 200)
 
     icon = QIcon("assets/favicon.ico.web")
